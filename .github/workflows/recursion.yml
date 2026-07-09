@@ -1,96 +1,33 @@
-name: Run recursion Tests on PR
-on:
-  pull_request:
-    paths:
-      - "recursion/**"
-  schedule:
-    - cron: "0 2 * * *"
-  workflow_dispatch:
+- name: Install Nargo
+  uses: noir-lang/noirup@v0.1.2
+  with:
+    toolchain: stable
 
-jobs:
-  test:
-    defaults:
-      run:
-        working-directory: recursion
-    permissions:
-      issues: write
+- name: Install bbup
+  run: |
+    curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/heads/next/barretenberg/bbup/install | bash
+    echo "PATH=$PATH:/home/runner/.bb" >> $GITHUB_ENV
 
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+- name: Determine and install compatible Barretenberg CLI
+  id: install-bb
+  shell: bash
+  run: |
+    sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Install Nargo
-        uses: noir-lang/noirup@v0.1.2
-        with:
-          toolchain: stable
-          
-      - name: Install bbup
-        run: |
-          curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/heads/next/barretenberg/bbup/install | bash
-          echo "PATH=$PATH:/home/runner/.bb" >> $GITHUB_ENV
-      
+    NOIR_VERSION=$(nargo --version | awk '{print $2}')
+    echo "Detected Noir version: $NOIR_VERSION"
 
-      - name: Determine and install compatible Barretenberg CLI
-        id: install-bb
-        shell: bash
-        run: |
-          sudo apt-get update && sudo apt-get install -y jq
+    curl -sL https://raw.githubusercontent.com/AztecProtocol/aztec-packages/master/barretenberg/bbup/bb-versions.json -o bb-versions.json
+    BB_VERSION=$(jq -r --arg v "$NOIR_VERSION" '.[$v]' bb-versions.json)
 
-          NOIR_VERSION=$(nargo --version | awk '{print $2}')
-          echo "Detected Noir version: $NOIR_VERSION"
+    if [ "$BB_VERSION" = "null" ]; then
+      echo "No compatible bb version for Noir $NOIR_VERSION"
+      exit 1
+    fi
 
-          curl -sL https://raw.githubusercontent.com/AztecProtocol/aztec-packages/master/barretenberg/bbup/bb-versions.json -o bb-versions.json
-          BB_VERSION=$(jq -r --arg v "$NOIR_VERSION" '.[$v]' bb-versions.json)
+    bbup -v "$BB_VERSION"
 
-          if [ "$BB_VERSION" = "null" ]; then
-            echo "No compatible bb version for Noir $NOIR_VERSION"
-            exit 1
-          fi
+    echo "bb_version=$BB_VERSION" >> $GITHUB_OUTPUT
+    echo "noir_version=$NOIR_VERSION" >> $GITHUB_OUTPUT
 
-          bbup -v $BB_VERSION
-
-          echo "bb_version=$BB_VERSION" >> $GITHUB_OUTPUT
-          echo "noir_version=$NOIR_VERSION" >> $GITHUB_OUTPUT
-
-          bb --version
-
-      - name: Build circuits
-        run: |
-          ./build.sh
-        working-directory: recursion/circuits
-
-      - name: Install matching @aztec/bb.js version
-        working-directory: recursion/js
-        run: |
-          BB_VERSION=${{ steps.install-bb.outputs.bb_version }}
-          yarn add @aztec/bb.js@$BB_VERSION --exact
-
-      - name: Install npm-check-updates and upgrade relevant dependencies
-        if: github.event_name == 'schedule'
-        working-directory: recursion/js
-        run: |
-          npm install -g npm-check-updates
-          ncu '/^(?:@noir-lang\/|barretenberg|@aztec\/)/' -u
-
-      - name: Install JS dependencies
-        working-directory: recursion/js
-        run: |
-          yarn install
-
-      - name: Generate proof in JS
-        run: |
-          yarn generate-proof
-        working-directory: recursion/js
-
-      - name: Create issue on failure (nightly)
-        if: failure() && github.event_name == 'schedule'
-        uses: actions/github-script@v6
-        with:
-          script: |
-            github.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: '[Nightly] Recursion workflow failed',
-              body: `The nightly Recursion workflow failed. Please investigate.\n\n/cc @noir-lang/developerrelations`,
-              labels: ['nightly', 'bug']
-            })
+    bb --version
